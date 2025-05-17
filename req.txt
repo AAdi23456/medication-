@@ -1,0 +1,120 @@
+
+
+> You are a senior full-stack engineer. Build a **complete medication adherence tracking platform** from scratch.
+>
+> ---
+>
+> ## 🔧 Tech Stack
+>
+> **Backend**: Node.js (Express) + PostgreSQL (via Prisma or Sequelize)
+> **Frontend**: Next.js (App Router, TypeScript) + TailwindCSS + shadcn/ui
+> **Integration**: Use `axios` or `fetch` from frontend to real backend endpoints. **Do NOT use mock data**.
+>
+> ---
+>
+> ## 🎯 Objective
+>
+> Help users manage complex medication schedules, log their doses, receive reminders, and track adherence visually.
+>
+> ---
+>
+> ## 👤 User Role
+>
+> * Single role: `user`
+> * Each user can only see and manage their own data (auth required for all protected routes).
+>
+> ---
+>
+> ## 🔐 Authentication
+>
+> * Signup/Login with **email and password**
+> * Use **JWT-based authentication**
+> * Add **Express middleware** to protect private routes
+> * On frontend, persist and pass token in requests
+>
+> ---
+>
+> ## 🧱 Core Features
+>
+> ### 1. Regimen Setup
+>
+> * User can add medications with the following fields:
+>
+>   * `name` (string)
+>   * `dose` (string)
+>   * `frequency` (number of times per day)
+>   * `times[]` (e.g., \["08:00", "14:00", "20:00"])
+>   * `start_date`, `end_date` (dates)
+>   * `category_id` (optional: allows grouping meds under categories like "Dad", "Mom")
+>
+> ### 2. Dose Logging
+>
+> * Daily list of scheduled doses
+> * “Mark Taken” button appears at scheduled times
+> * Allow dose logging up to 4 hours late (show warning if late)
+> * Add basic reward mechanism for consistent logging (e.g., streak count)
+>
+> ### 3. Reminders
+>
+> * In-app notifications for upcoming doses
+> * **Integrate with Google Calendar API**: allow user to sync med times with calendar
+>
+> ### 4. Adherence Dashboard
+>
+> * Calendar heatmap showing taken vs. missed doses
+> * Weekly adherence % bar chart
+> * List of most commonly missed medications
+>
+> ### 5. Export Reports
+>
+> * Allow users to export:
+>
+>   * PDF report of logs & adherence
+>   * CSV export of raw log data
+>
+> ---
+>
+> ## 📂 Project Structure & Dev Notes
+>
+> ### Backend
+>
+> * Use Express routers for `auth`, `medications`, `doseLogs`, `categories`, etc.
+> * Connect to PostgreSQL using Prisma or Sequelize
+> * Middleware:
+>
+>   * Auth middleware to decode JWT
+>   * Error handler middleware
+> * Validation: use Zod or express-validator
+>
+> ### Frontend
+>
+> * Use Next.js App Router
+> * Components from shadcn/ui and styled with Tailwind
+> * Implement pages:
+>
+>   * `Register`, `Login`
+>   * `Dashboard` (today's schedule, log buttons)
+>   * `Regimen Setup` (form to add/edit meds)
+>   * `Adherence Stats` (charts, heatmap)
+>   * `Reports` (export UI)
+> * Handle API requests via `axios` with JWT header
+>
+> ### Extras
+>
+> 
+> * Do not use mock data at any stage
+> * Ensure frontend is connected to the backend endpoints properly
+>
+> ---
+>
+> ✅ Expected Output:
+>
+> * Fully functional backend with database and  APIs
+> * Frontend UI with actual dynamic data
+> * Real communication between frontend and backend
+> * 
+> * Export to PDF and CSV
+use diffrent subfolders for backend and frontend 
+
+> Be concise and modular in code. Use professional file and folder structure. Do not explain anything — just give me the full working code for both backend and frontend.
+
