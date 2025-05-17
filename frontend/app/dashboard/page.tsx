@@ -21,6 +21,7 @@ type ScheduleItem = {
   }
   scheduledTime: string
   status: 'pending' | 'taken' | 'missed' | 'skipped'
+  isUpdating: boolean
 }
 
 export default function DashboardPage() {
@@ -29,6 +30,7 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retryCount, setRetryCount] = useState(0)
+  const [recentlyUpdated, setRecentlyUpdated] = useState<{medicationId: number, scheduledTime: string}[]>([])
 
   // Format time
   const formatTime = (timeString: string) => {
@@ -58,7 +60,48 @@ export default function DashboardPage() {
     return diffMinutes > 240 // More than 4 hours
   }
 
-  // Fetch today's schedule
+  // Fetch today's schedule - extracted to be reusable
+  const fetchSchedule = async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+      console.log('Fetching schedule data...');
+      const response = await doseLogApi.getTodaySchedule()
+      console.log('Schedule data received:', response.data);
+      
+      // Add isUpdating property to each schedule item
+      const scheduleWithUpdating = response.data.schedule.map((item: any) => ({
+        ...item,
+        isUpdating: false
+      }));
+      
+      setSchedule(scheduleWithUpdating)
+    } catch (err: any) {
+      console.error('Error fetching schedule:', err)
+      // Show more detailed error message
+      const errorMessage = err.response?.status === 401 
+        ? 'Authentication error. Please log in again.'
+        : err.response?.data?.message || 'Failed to load today\'s schedule. Please try again.';
+      
+      setError(errorMessage)
+      
+      // If there's an auth error, redirect to login
+      if (err.response?.status === 401) {
+        window.location.href = '/login';
+      }
+      
+      // Auto-retry up to 3 times for non-auth errors
+      if (err.response?.status !== 401 && retryCount < 3) {
+        setTimeout(() => {
+          setRetryCount(prev => prev + 1);
+        }, 2000);
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Fetch today's schedule on load
   useEffect(() => {
     // Only fetch when authentication is complete
     if (authLoading) return
@@ -70,37 +113,6 @@ export default function DashboardPage() {
       return
     }
 
-    const fetchSchedule = async () => {
-      try {
-        setIsLoading(true)
-        setError(null)
-        const response = await doseLogApi.getTodaySchedule()
-        setSchedule(response.data.schedule)
-      } catch (err: any) {
-        console.error('Error fetching schedule:', err)
-        // Show more detailed error message
-        const errorMessage = err.response?.status === 401 
-          ? 'Authentication error. Please log in again.'
-          : err.response?.data?.message || 'Failed to load today\'s schedule. Please try again.';
-        
-        setError(errorMessage)
-        
-        // If there's an auth error, redirect to login
-        if (err.response?.status === 401) {
-          window.location.href = '/login';
-        }
-        
-        // Auto-retry up to 3 times for non-auth errors
-        if (err.response?.status !== 401 && retryCount < 3) {
-          setTimeout(() => {
-            setRetryCount(prev => prev + 1);
-          }, 2000);
-        }
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
     fetchSchedule()
   }, [authLoading, isAuthenticated, retryCount])
 
@@ -108,11 +120,24 @@ export default function DashboardPage() {
   const handleLogDose = async (medicationId: number, scheduledTime: string, status: 'taken' | 'missed' | 'skipped' = 'taken') => {
     try {
       setError(null)
+      console.log(`Logging dose: ${medicationId}, ${scheduledTime}, ${status}`);
+      
+      // Find the medication item and update its status to show immediate feedback
+      setSchedule(prevSchedule => 
+        prevSchedule.map(item => 
+          item.medicationId === medicationId && item.scheduledTime === scheduledTime
+            ? { ...item, status: status, isUpdating: true }
+            : item
+        )
+      )
+      
       const response = await doseLogApi.logDose({
         medicationId,
         scheduledTime,
         status
       })
+      
+      console.log('Dose log response:', response.data);
       
       // Get the actual status from the response (might be different than requested)
       const actualStatus = response.data.doseLog.status
@@ -126,13 +151,25 @@ export default function DashboardPage() {
       setSchedule(prevSchedule => 
         prevSchedule.map(item => 
           item.medicationId === medicationId && item.scheduledTime === scheduledTime
-            ? { ...item, status: actualStatus }
+            ? { ...item, status: actualStatus, isUpdating: false }
             : item
         )
       )
+      
+      // Add to recently updated for animation
+      setRecentlyUpdated(prev => [...prev, { medicationId, scheduledTime }])
     } catch (err: any) {
       console.error('Error logging dose:', err)
       setError(err.response?.data?.message || 'Failed to log dose. Please try again.')
+      
+      // Revert the status if there was an error
+      setSchedule(prevSchedule => 
+        prevSchedule.map(item => 
+          item.medicationId === medicationId && item.scheduledTime === scheduledTime
+            ? { ...item, status: 'pending', isUpdating: false }
+            : item
+        )
+      )
       
       // If auth error, redirect to login
       if (err.response?.status === 401) {
@@ -140,6 +177,16 @@ export default function DashboardPage() {
       }
     }
   }
+
+  // Clear recently updated items after animation
+  useEffect(() => {
+    if (recentlyUpdated.length > 0) {
+      const timer = setTimeout(() => {
+        setRecentlyUpdated([]);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [recentlyUpdated]);
 
   // Render authentication loading state
   if (authLoading) {
@@ -197,15 +244,31 @@ export default function DashboardPage() {
           </p>
         </div>
         
-        {user?.streak && user.streak > 0 && (
-          <div className="hidden md:flex items-center p-3 bg-amber-50 text-amber-800 rounded-lg border border-amber-200">
-            <Award className="h-5 w-5 mr-2 text-amber-500" />
-            <div>
-              <p className="font-medium">{user.streak} Day Streak!</p>
-              <p className="text-xs">Keep it up to stay on track</p>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => fetchSchedule()}
+            className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg text-sm"
+            disabled={isLoading}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`${isLoading ? 'animate-spin' : ''}`}>
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+              <path d="M3 3v5h5"></path>
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+              <path d="M16 16h5v5"></path>
+            </svg>
+            {isLoading ? 'Refreshing...' : 'Refresh'}
+          </button>
+          
+          {user?.streak && user.streak > 0 && (
+            <div className="hidden md:flex items-center p-3 bg-amber-50 text-amber-800 rounded-lg border border-amber-200">
+              <Award className="h-5 w-5 mr-2 text-amber-500" />
+              <div>
+                <p className="font-medium">{user.streak} Day Streak!</p>
+                <p className="text-xs">Keep it up to stay on track</p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {error && (
@@ -242,12 +305,14 @@ export default function DashboardPage() {
                   .sort(([timeA], [timeB]) => timeA.localeCompare(timeB))
                   .map(([time, items]) => {
                     const isDue = isDueNow(time);
+                    const pastWindow = isPastWindow(time);
                     return (
                       <div 
                         key={time} 
                         className={`
                           p-5 transition-colors
                           ${isDue ? 'bg-blue-50 border-l-4 border-blue-500' : ''}
+                          ${pastWindow && !isDue ? 'bg-gray-50 border-l-4 border-gray-300' : ''}
                         `}
                       >
                         <div className="flex justify-between items-center mb-3">
@@ -260,71 +325,93 @@ export default function DashboardPage() {
                               Due now
                             </span>
                           )}
+                          {pastWindow && !isDue && (
+                            <span className="bg-gray-100 text-gray-800 text-xs px-2.5 py-1 rounded-full font-medium">
+                              Past scheduled time
+                            </span>
+                          )}
                         </div>
 
                         <div className="space-y-4">
-                          {items.map((item) => (
-                            <div 
-                              key={`${item.medicationId}-${item.scheduledTime}`}
-                              className="bg-white rounded-lg border p-4 flex justify-between items-center shadow-sm"
-                            >
-                              <div className="flex items-center">
-                                <PillIcon className="h-5 w-5 text-primary mr-3" />
-                                <div>
-                                  <h4 className="font-medium">{item.medication.name}</h4>
-                                  <p className="text-sm text-gray-500">{item.medication.dose}</p>
-                                  {item.medication.category && (
-                                    <span className="inline-block mt-1 px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded-full">
-                                      {item.medication.category.name}
+                          {items.map((item) => {
+                            const itemPastWindow = isPastWindow(item.scheduledTime);
+                            const isRecentlyUpdated = recentlyUpdated.some(
+                              updated => updated.medicationId === item.medicationId && updated.scheduledTime === item.scheduledTime
+                            );
+                            return (
+                              <div 
+                                key={`${item.medicationId}-${item.scheduledTime}`}
+                                className={`
+                                  bg-white rounded-lg border p-4 flex justify-between items-center shadow-sm 
+                                  ${itemPastWindow && item.status === 'pending' ? 'border-red-200 bg-red-50' : ''} 
+                                  ${item.isUpdating ? 'opacity-80' : ''} 
+                                  ${isRecentlyUpdated ? 'transition-colors animate-update-highlight' : ''}
+                                `}
+                              >
+                                <div className="flex items-center">
+                                  <PillIcon className="h-5 w-5 text-primary mr-3" />
+                                  <div>
+                                    <h4 className="font-medium">{item.medication.name}</h4>
+                                    <p className="text-sm text-gray-500">{item.medication.dose}</p>
+                                    {item.medication.category && (
+                                      <span className="inline-block mt-1 px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded-full">
+                                        {item.medication.category.name}
+                                      </span>
+                                    )}
+                                    
+                                    {itemPastWindow && item.status === 'pending' && (
+                                      <div className="mt-1 text-xs font-medium text-red-600 flex items-center">
+                                        <AlertTriangle className="h-3 w-3 mr-1" />
+                                        Past 4hr window
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                <div className="flex items-center">
+                                  {item.isUpdating ? (
+                                    <div className="flex items-center px-4 py-1">
+                                      <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin mr-2"></div>
+                                      <span className="text-sm text-gray-600">Updating...</span>
+                                    </div>
+                                  ) : item.status === 'pending' ? (
+                                    <>
+                                      <button
+                                        onClick={() => handleLogDose(item.medicationId, item.scheduledTime, 'taken')}
+                                        className={`${itemPastWindow ? 'bg-red-100 text-red-800 hover:bg-red-200' : 'bg-green-100 text-green-800 hover:bg-green-200'} mr-2 px-3 py-1 rounded-md flex items-center`}
+                                        title={itemPastWindow ? "This will be automatically marked as 'missed'" : "Mark as taken"}
+                                        disabled={item.isUpdating}
+                                      >
+                                        <Check className="h-4 w-4 mr-1" />
+                                        Take {itemPastWindow && <span className="ml-1 text-xs">(missed)</span>}
+                                      </button>
+                                      <button
+                                        onClick={() => handleLogDose(item.medicationId, item.scheduledTime, 'skipped')}
+                                        className="bg-gray-100 text-gray-800 hover:bg-gray-200 px-3 py-1 rounded-md flex items-center"
+                                        disabled={item.isUpdating}
+                                      >
+                                        <X className="h-4 w-4 mr-1" />
+                                        Skip
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span className={`px-3 py-1 rounded-md text-sm flex items-center ${
+                                      item.status === 'taken' 
+                                        ? 'bg-green-100 text-green-800' 
+                                        : item.status === 'skipped'
+                                          ? 'bg-gray-100 text-gray-800'
+                                          : 'bg-red-100 text-red-800'
+                                    }`}>
+                                      {item.status === 'taken' && <Check className="h-4 w-4 mr-1" />}
+                                      {item.status === 'skipped' && <X className="h-4 w-4 mr-1" />}
+                                      {item.status === 'missed' && <AlertTriangle className="h-4 w-4 mr-1" />}
+                                      {item.status === 'taken' ? 'Taken' : item.status === 'skipped' ? 'Skipped' : 'Missed'}
                                     </span>
                                   )}
                                 </div>
                               </div>
-                              
-                              <div className="flex items-center">
-                                {item.status === 'pending' ? (
-                                  <>
-                                    <button
-                                      onClick={() => handleLogDose(item.medicationId, item.scheduledTime, 'taken')}
-                                      className="bg-green-100 text-green-800 hover:bg-green-200 mr-2 px-3 py-1 rounded-md flex items-center"
-                                    >
-                                      <Check className="h-4 w-4 mr-1" />
-                                      Take
-                                    </button>
-                                    <button
-                                      onClick={() => handleLogDose(item.medicationId, item.scheduledTime, 'skipped')}
-                                      className="bg-gray-100 text-gray-800 hover:bg-gray-200 px-3 py-1 rounded-md flex items-center"
-                                    >
-                                      <X className="h-4 w-4 mr-1" />
-                                      Skip
-                                    </button>
-                                  </>
-                                ) : item.status === 'taken' ? (
-                                  <span className="bg-green-100 text-green-800 px-3 py-1 rounded-md flex items-center">
-                                    <Check className="h-4 w-4 mr-1" />
-                                    Taken
-                                  </span>
-                                ) : item.status === 'missed' ? (
-                                  <span className="bg-red-100 text-red-800 px-3 py-1 rounded-md flex items-center">
-                                    <X className="h-4 w-4 mr-1" />
-                                    Missed
-                                  </span>
-                                ) : (
-                                  <span className="bg-gray-100 text-gray-800 px-3 py-1 rounded-md flex items-center">
-                                    <X className="h-4 w-4 mr-1" />
-                                    Skipped
-                                  </span>
-                                )}
-                                
-                                {item.status === 'pending' && isPastWindow(item.scheduledTime) && (
-                                  <div className="ml-2 text-xs text-red-600 flex items-center">
-                                    <AlertTriangle className="h-3 w-3 mr-1" />
-                                    Past 4hr window
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     );

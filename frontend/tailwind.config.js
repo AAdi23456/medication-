@@ -65,10 +65,16 @@ module.exports = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: 0 },
         },
+        "update-highlight": {
+          "0%": { backgroundColor: "rgb(219 234 254)" }, // blue-100
+          "50%": { backgroundColor: "rgb(219 234 254)" },
+          "100%": { backgroundColor: "rgb(255 255 255)" }, // white
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "update-highlight": "update-highlight 2s ease",
       },
     },
   },

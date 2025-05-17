@@ -21,7 +21,27 @@ const Medication = sequelize.define('Medication', {
   },
   times: {
     type: DataTypes.ARRAY(DataTypes.STRING),
-    allowNull: false
+    allowNull: false,
+    get() {
+      const rawValue = this.getDataValue('times');
+      if (rawValue) {
+        if (Array.isArray(rawValue)) {
+          return rawValue;
+        }
+        if (typeof rawValue === 'string') {
+          try {
+            if (rawValue.startsWith('{') && rawValue.endsWith('}')) {
+              return rawValue.slice(1, -1).split(',');
+            }
+            return JSON.parse(rawValue);
+          } catch (e) {
+            console.error('Error parsing times array', e);
+            return [rawValue];
+          }
+        }
+      }
+      return [];
+    }
   },
   startDate: {
     type: DataTypes.DATEONLY,

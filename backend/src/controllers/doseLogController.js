@@ -1,10 +1,34 @@
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { DoseLog, Medication, User, Category } = require('../models');
+const database = require('../config/database');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const csv = require('fast-csv');
+
+// Helper function to format dates consistently
+const formatDateString = (date) => {
+  if (!date) return null;
+  
+  // If it's already a string in YYYY-MM-DD format, return it
+  if (typeof date === 'string' && date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    return date;
+  }
+  
+  // If it's a Date object, convert to ISO string and take date part
+  if (date instanceof Date) {
+    return date.toISOString().split('T')[0];
+  }
+  
+  // Otherwise try to create a new Date and format it
+  try {
+    return new Date(date).toISOString().split('T')[0];
+  } catch (e) {
+    console.error('Error formatting date:', e);
+    return null;
+  }
+};
 
 // Get all dose logs for user with date range
 exports.getDoseLogs = async (req, res, next) => {
@@ -43,30 +67,66 @@ exports.getDoseLogs = async (req, res, next) => {
 // Get today's schedule
 exports.getTodaySchedule = async (req, res, next) => {
   try {
+    // Log the incoming user ID for debugging
+    console.log('User ID from request:', req.user.id);
+
+    // Create today's date - but make sure it's properly formatted
     const today = new Date();
+    // Log the current date for debugging
+    console.log('Current date:', today);
+    
+    // Clear time portion for consistent comparison
     today.setHours(0, 0, 0, 0);
     
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
     
     const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    console.log('Today as string (YYYY-MM-DD):', todayStr);
+
+    // Get all medications regardless of date for debugging
+    const allUserMedications = await Medication.findAll({
+      where: {
+        userId: req.user.id
+      }
+    });
+
+    console.log('All user medications count:', allUserMedications.length);
+    
+    if (allUserMedications.length > 0) {
+      console.log('First medication start date:', allUserMedications[0].startDate);
+      console.log('First medication date as string:', formatDateString(allUserMedications[0].startDate));
+    }
 
     // Get all medications that should be active today
     const medications = await Medication.findAll({
       where: {
         userId: req.user.id,
-        startDate: {
-          [Op.lte]: today
-        },
-        [Op.or]: [
-          { endDate: null },
-          { endDate: { [Op.gte]: today } }
+        // Modified date comparison to be more flexible
+        [Op.and]: [
+          database.where(
+            database.fn('date', database.col('startDate')), 
+            '<=', 
+            database.fn('date', database.literal('now()'))
+          ),
+          {
+            [Op.or]: [
+              { endDate: null },
+              database.where(
+                database.fn('date', database.col('endDate')), 
+                '>=', 
+                database.fn('date', database.literal('now()'))
+              )
+            ]
+          }
         ]
       },
       include: [
         { model: Category, as: 'category', attributes: ['id', 'name'] }
       ]
     });
+
+    console.log('Active medications count:', medications.length);
 
     // Get logs for today to check what's already been taken
     const todayLogs = await DoseLog.findAll({
@@ -77,6 +137,8 @@ exports.getTodaySchedule = async (req, res, next) => {
         }
       }
     });
+    
+    console.log('Today logs count:', todayLogs.length);
 
     // Current time for calculating missed doses
     const now = new Date();
@@ -85,14 +147,25 @@ exports.getTodaySchedule = async (req, res, next) => {
     const schedule = [];
     medications.forEach(medication => {
       // Double-check that medication is active today using string comparison
-      const medStartDate = medication.startDate.toISOString().split('T')[0];
-      const medEndDate = medication.endDate ? medication.endDate.toISOString().split('T')[0] : null;
+      const medStartDate = formatDateString(medication.startDate);
+      const medEndDate = medication.endDate ? formatDateString(medication.endDate) : null;
       
-      if (medStartDate > todayStr || (medEndDate && medEndDate < todayStr)) {
+      console.log(`Medication ${medication.id}: start=${medStartDate}, end=${medEndDate}`);
+      
+      if (!medStartDate || medStartDate > todayStr || (medEndDate && medEndDate < todayStr)) {
+        console.log(`Skipping medication ${medication.id} due to date range`);
+        return;
+      }
+      
+      // Skip medications with no times array
+      if (!Array.isArray(medication.times) || medication.times.length === 0) {
+        console.log(`Skipping medication ${medication.id} - times array issue:`, medication.times);
         return;
       }
       
       medication.times.forEach(time => {
+        console.log(`Processing time ${time} for medication ${medication.id}`);
+        
         // Check if this dose was already logged
         const alreadyLogged = todayLogs.some(log => 
           log.medicationId === medication.id && 
@@ -140,8 +213,37 @@ exports.getTodaySchedule = async (req, res, next) => {
       return a.scheduledTime.localeCompare(b.scheduledTime);
     });
 
-    res.json({ schedule });
+    // If no schedule items found, try to include ALL medications that the user has, just for debugging
+    if (schedule.length === 0) {
+      console.log('No schedule items found after processing - adding fallback debug data');
+      
+      allUserMedications.forEach(medication => {
+        // Add all medications to schedule with pending status
+        if (Array.isArray(medication.times)) {
+          medication.times.forEach(time => {
+            schedule.push({
+              medicationId: medication.id,
+              medication: {
+                id: medication.id,
+                name: medication.name,
+                dose: medication.dose,
+                category: null
+              },
+              scheduledTime: time,
+              status: 'pending',
+              debug: true
+            });
+          });
+        } else {
+          console.log(`Medication ${medication.id} has invalid times:`, medication.times);
+        }
+      });
+    }
+
+    console.log('Final schedule items count:', schedule.length);
+    res.json({ schedule, debug: { today: todayStr } });
   } catch (error) {
+    console.error('Error in getTodaySchedule:', error);
     next(error);
   }
 };
@@ -206,10 +308,10 @@ exports.getWeeklySchedule = async (req, res, next) => {
       medications.forEach(medication => {
         // Skip if medication wasn't active on this day
         // Important: Compare dates as strings in YYYY-MM-DD format to avoid time issues
-        const medStartDate = medication.startDate.toISOString().split('T')[0];
-        const medEndDate = medication.endDate ? medication.endDate.toISOString().split('T')[0] : null;
+        const medStartDate = formatDateString(medication.startDate);
+        const medEndDate = medication.endDate ? formatDateString(medication.endDate) : null;
         
-        if (medStartDate > dateStr || (medEndDate && medEndDate < dateStr)) {
+        if (!medStartDate || medStartDate > dateStr || (medEndDate && medEndDate < dateStr)) {
           return;
         }
         
@@ -274,12 +376,16 @@ exports.getWeeklySchedule = async (req, res, next) => {
 // Log a dose
 exports.logDose = async (req, res, next) => {
   try {
+    console.log('Received dose log request:', req.body);
+    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
       return res.status(400).json({ errors: errors.array() });
     }
 
     const { medicationId, scheduledTime, status = 'taken' } = req.body;
+    console.log(`Processing dose log: Med ID ${medicationId}, Time ${scheduledTime}, Status ${status}`);
 
     // Check if medication exists and belongs to user
     const medication = await Medication.findOne({
@@ -290,7 +396,55 @@ exports.logDose = async (req, res, next) => {
     });
 
     if (!medication) {
+      console.log(`Medication not found: ${medicationId} for user ${req.user.id}`);
       return res.status(404).json({ message: 'Medication not found' });
+    }
+    
+    console.log('Found medication:', medication.name);
+
+    // Check if this dose was already logged today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    const existingLog = await DoseLog.findOne({
+      where: {
+        medicationId,
+        userId: req.user.id,
+        scheduledTime,
+        createdAt: {
+          [Op.between]: [today, tomorrow]
+        }
+      }
+    });
+    
+    if (existingLog) {
+      console.log(`Updating existing log ${existingLog.id} from ${existingLog.status} to ${status}`);
+      // Update existing log
+      existingLog.status = status;
+      existingLog.takenAt = new Date();
+      await existingLog.save();
+      
+      // Fetch full log with medication details
+      const updatedLog = await DoseLog.findByPk(existingLog.id, {
+        include: [
+          { 
+            model: Medication, 
+            as: 'medication',
+            include: [
+              { model: Category, as: 'category' }
+            ]
+          }
+        ]
+      });
+      
+      return res.status(200).json({
+        message: 'Dose status updated successfully',
+        doseLog: updatedLog,
+        userStreak: req.user.streak
+      });
     }
 
     // Calculate if the dose is late (more than 30 min after scheduled time)
@@ -303,6 +457,8 @@ exports.logDose = async (req, res, next) => {
     const timeDiffMinutes = (now - scheduledDateTime) / (1000 * 60);
     const isLate = timeDiffMinutes > 30 && timeDiffMinutes < 240;
     
+    console.log(`Time difference: ${timeDiffMinutes} minutes, isLate: ${isLate}`);
+    
     // If trying to log as taken more than 4 hours late, automatically mark as missed
     let finalStatus = status;
     let responseMessage = 'Dose logged successfully';
@@ -310,16 +466,22 @@ exports.logDose = async (req, res, next) => {
     if (timeDiffMinutes > 240 && status === 'taken') {
       finalStatus = 'missed';
       responseMessage = 'Dose marked as missed because it was more than 4 hours after scheduled time';
+      console.log('Auto-marking as missed due to 4+ hour delay');
     }
 
+    console.log(`Creating log with status: ${finalStatus}`);
+    
     // Create dose log
     const doseLog = await DoseLog.create({
       medicationId,
       userId: req.user.id,
       scheduledTime,
       status: finalStatus,
-      wasLate: isLate
+      wasLate: isLate,
+      takenAt: new Date()
     });
+    
+    console.log(`Created dose log with ID: ${doseLog.id}`);
 
     // Update user streak if dose was taken
     if (finalStatus === 'taken') {
@@ -332,6 +494,7 @@ exports.logDose = async (req, res, next) => {
         user.streak += 1;
         user.lastStreakUpdate = new Date();
         await user.save();
+        console.log(`Updated user streak to ${user.streak}`);
       }
     }
 
@@ -348,12 +511,14 @@ exports.logDose = async (req, res, next) => {
       ]
     });
 
+    console.log('Sending response with log details');
     res.status(201).json({
       message: responseMessage,
       doseLog: logWithDetails,
       userStreak: req.user.streak
     });
   } catch (error) {
+    console.error('Error in logDose:', error);
     next(error);
   }
 };
@@ -431,10 +596,10 @@ exports.getAdherenceStats = async (req, res, next) => {
       medications.forEach(medication => {
         // Skip if medication wasn't active on this day
         // Important: Compare dates as strings in YYYY-MM-DD format to avoid time issues
-        const medStartDate = medication.startDate.toISOString().split('T')[0];
-        const medEndDate = medication.endDate ? medication.endDate.toISOString().split('T')[0] : null;
+        const medStartDate = formatDateString(medication.startDate);
+        const medEndDate = medication.endDate ? formatDateString(medication.endDate) : null;
         
-        if (medStartDate > dateStr || (medEndDate && medEndDate < dateStr)) {
+        if (!medStartDate || medStartDate > dateStr || (medEndDate && medEndDate < dateStr)) {
           return;
         }
         

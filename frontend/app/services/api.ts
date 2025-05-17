@@ -1,8 +1,8 @@
 import axios from 'axios';
 import Cookies from 'js-cookie';
 
-// Use the environment variable for API URL - changed to use port 5001
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001/api';
+// Use the environment variable for API URL - changed to use port 5000
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
 
 // Create an axios instance
 const api = axios.create({
